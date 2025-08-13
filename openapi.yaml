@@ -1,17 +1,25 @@
+```yaml
 openapi: 3.0.0
 info:
-  title: LLM Chat API
-  description: API for LLM chat with Supabase and LiteLLM
+  title: LLM Chat API (Supabase Edge Function)
+  description: API for handling LLM-based chat interactions, integrated with Supabase for authentication and context storage, and LiteLLM for LLM proxying. Supports chat creation, continuation, and deletion.
   version: 1.0.0
 servers:
   - url: https://{project-ref}.supabase.co/functions/v1
+    description: Supabase Edge Functions endpoint
     variables:
       project-ref:
         default: your-project-ref
+        description: Your Supabase project reference ID
 paths:
   /chat-handler:
     post:
       summary: Handle a chat message
+      description: |
+        Sends a user message to an LLM via LiteLLM proxy, either creating a new chat or continuing an existing one. 
+        Supports streaming (real-time token output) or non-streaming (full response) modes. 
+        Stores chat history in Supabase DB and uses LiteLLM virtual keys for pay-to-use billing.
+      operationId: handleChat
       security:
         - bearerAuth: []
       requestBody:
@@ -20,31 +28,182 @@ paths:
           application/json:
             schema:
               type: object
-              required: [message]
+              required:
+                - message
               properties:
-                message: { type: string, example: "Hello" }
-                chat_id: { type: string, format: uuid, example: "123e4567-e89b-12d3-a456-426614174000" }
-                model: { type: string, example: "gpt-4" }
-                stream: { type: boolean, default: false }
+                message:
+                  type: string
+                  description: The user's message to send to the LLM.
+                  example: "Hello, how are you?"
+                chat_id:
+                  type: string
+                  format: uuid
+                  description: ID of an existing chat session. Omit to create a new chat.
+                  example: "123e4567-e89b-12d3-a456-426614174000"
+                model:
+                  type: string
+                  description: The LLM model to use (required for new chats, optional for existing). Must match LiteLLM-supported models.
+                  example: "gpt-4"
+                stream:
+                  type: boolean
+                  description: Whether to stream the response token-by-token. Defaults to false.
+                  default: false
+                  example: true
       responses:
         '200':
-          description: Success
+          description: Successful response
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  chat_id: { type: string, format: uuid }
-                  response: { type: string }
+                  chat_id:
+                    type: string
+                    format: uuid
+                    description: The ID of the chat session (new or existing).
+                    example: "123e4567-e89b-12d3-a456-426614174000"
+                  response:
+                    type: string
+                    description: The LLM's response (for non-streaming mode).
+                    example: "I'm doing great, thanks for asking!"
+              description: Returned when stream is false.
             text/plain:
-              schema: { type: string }
-        '400': { description: Bad request }
-        '401': { description: Unauthorized }
-        '404': { description: Chat not found }
-        '500': { description: Server error }
+              schema:
+                type: string
+              description: Stream of tokens from the LLM (when stream is true). Tokens are sent as plain text, one per chunk.
+              example: "I'm doing great, thanks for asking!"
+        '400':
+          description: Bad request (e.g., missing message or model for new chat)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Message is required"
+        '401':
+          description: Unauthorized (invalid or missing JWT, or no API key in profile)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Invalid token or user not found"
+                  details:
+                    type: string
+                    nullable: true
+                    example: "Supabase Auth API error response"
+        '404':
+          description: Chat not found or access denied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Chat not found or access denied"
+        '500':
+          description: Internal server error (e.g., Supabase DB or LiteLLM failure)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Internal server error"
+  /delete-chat:
+    post:
+      summary: Delete a chat
+      description: |
+        Deletes a chat by chat_id, either logically (sets is_deleted: true) or physically (removes from DB).
+        Requires Supabase JWT for authentication and checks user ownership via RLS.
+      operationId: deleteChat
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - chat_id
+              properties:
+                chat_id:
+                  type: string
+                  format: uuid
+                  description: ID of the chat to delete.
+                  example: "123e4567-e89b-12d3-a456-426614174000"
+                hard_delete:
+                  type: boolean
+                  description: If true, physically deletes the chat from DB. If false, marks as deleted (is_deleted: true). Defaults to false.
+                  default: false
+                  example: false
+      responses:
+        '200':
+          description: Chat successfully deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+        '400':
+          description: Bad request (e.g., missing chat_id)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "chat_id is required"
+        '401':
+          description: Unauthorized (invalid or missing JWT)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Invalid token or user not found"
+                  details:
+                    type: string
+                    nullable: true
+                    example: "Supabase Auth API error response"
+        '404':
+          description: Chat not found or access denied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Chat not found or access denied"
+        '500':
+          description: Internal server error (e.g., Supabase DB failure)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Internal server error"
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
+      description: Supabase JWT token obtained from Supabase Auth (access_token).
+```
